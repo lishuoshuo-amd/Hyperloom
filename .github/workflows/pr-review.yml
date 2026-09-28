@@ -183,7 +183,9 @@ jobs:
           if [ "$INSECURE" = 1 ]; then
             export NODE_TLS_REJECT_UNAUTHORIZED=0
           fi
-          mkdir -p "$WORK"
+          mkdir -p "$WORK" "$RUNNER_TEMP/agent-home" "$RUNNER_TEMP/agent-tmp"
+          export HOME="$RUNNER_TEMP/agent-home"
+          export TMPDIR="$RUNNER_TEMP/agent-tmp"
           prompt=$(cat <<EOF
           Review pull request #${PR} of ${HL_REPO} with the review-pr skill: read
           .claude/skills/review-pr/SKILL.md and follow it top to bottom, with these overrides for this CI run.
@@ -193,8 +195,8 @@ jobs:
           - The repository root contains trusted automation from the default branch. The exact PR base
             is at base-tree/ and head ${HEAD_SHA} is at pr-head/. Read the PR's authoring contract from
             base-tree/; every head-tree read or grep targets pr-head/.
-          - Do not run code from base-tree/ or pr-head/: no python, pytest, pip, make or scripts. Where
-            a step asks you to reproduce by running code, apply the SKIPPED protocol.
+          - You may install missing tools and run the smallest scoped test needed to verify a finding.
+            Never run the full test suite. Do not modify or push the PR branch.
           - Step 7's independent reader is a Task sub-agent given only card.md, diff.txt and base.txt.
           - Do not publish. Your last action is writing the final card to ${WORK}/card.md; the workflow
             publishes it.
@@ -204,10 +206,6 @@ jobs:
             0 as \`1. [\`, \`2. [\`. The final line carries \`Head: ${HEAD_SHA}\` with the full sha.
           EOF
           )
-          tools=(Read Grep Glob Write Edit Task TodoWrite
-            "Bash(bash .claude/skills/review-pr/fetch.sh *)" "Bash(gh *)" "Bash(git *)" "Bash(rg *)"
-            "Bash(grep *)" "Bash(cat *)" "Bash(head *)" "Bash(tail *)" "Bash(wc *)" "Bash(ls *)"
-            "Bash(sort *)" "Bash(uniq *)" "Bash(diff *)" "Bash(jq *)")
           # shellcheck disable=SC2016  # $sub is a jq variable, not a shell one
           progress='
             def brief: (.file_path // .pattern // .command // .path // .description // "")
@@ -223,8 +221,8 @@ jobs:
               (if .is_error then "[result] error \(.result | tostring | .[0:500])" else empty end),
               ((.permission_denials // [])[] | "[result] denied \(.tool_name) \(.tool_input | brief)")
             else empty end'
-          claude -p "$prompt" --model "$PR_REVIEW_MODEL" --permission-mode dontAsk \
-            --output-format stream-json --verbose --allowedTools "${tools[@]}" \
+          claude -p "$prompt" --model "$PR_REVIEW_MODEL" --dangerously-skip-permissions \
+            --output-format stream-json --verbose \
             | jq --unbuffered -rR "$progress"
 
       - uses: actions/upload-artifact@v7
