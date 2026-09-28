@@ -116,6 +116,10 @@ jobs:
       CLI_VERSION: ${{ vars.PR_REVIEW_CLAUDE_CLI_VERSION }}
       INSECURE: ${{ vars.PR_REVIEW_INSECURE }}
     steps:
+      - name: Prepare clean workspace
+        run: |
+          shopt -s dotglob nullglob
+          rm -rf -- "${GITHUB_WORKSPACE:?}"/*
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
