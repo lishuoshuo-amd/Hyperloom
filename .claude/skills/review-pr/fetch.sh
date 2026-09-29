@@ -137,43 +137,31 @@ gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
 gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status" \
   --jq '.statuses[] | [.context, .state, (.target_url // "")] | @tsv' >> "$WORK/ci.txt"
 
-gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews" > "$WORK/.reviews.json"
-gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments" > "$WORK/.inline-comments.json"
-gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" > "$WORK/.issue-comments.json"
-jq -r 'add[] | .user.login' "$WORK"/.{reviews,inline-comments,issue-comments}.json \
-  | sort -u > "$WORK/.comment-users"
+# Only the author, users with write access and this bot reach comments.txt, so an outside comment
+# cannot steer the review.
+raw=$(mktemp -d)
+trap 'rm -rf "$raw"' EXIT
+gh api --paginate --slurp "repos/$REPO/pulls/$PR/reviews" | jq -s '[.[][][]]' > "$raw/reviews.json"
+gh api --paginate --slurp "repos/$REPO/pulls/$PR/comments" | jq -s '[.[][][]]' > "$raw/inline.json"
+gh api --paginate --slurp "repos/$REPO/issues/$PR/comments" | jq -s '[.[][][]]' > "$raw/issue.json"
 
 PR_AUTHOR=$(sed -n 's/^author: //p' "$WORK/meta.txt")
-: > "$WORK/.trusted-comment-users"
-while IFS= read -r login; do
+jq -r '.[].user.login' "$raw"/{reviews,inline,issue}.json | sort -u | while IFS= read -r login; do
   if [ "$login" = "$PR_AUTHOR" ] || [ "$login" = 'github-actions[bot]' ]; then
-    printf '%s\n' "$login" >> "$WORK/.trusted-comment-users"
+    echo "$login"
     continue
   fi
-  permission=$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission 2>/dev/null || true)
-  case "$permission" in
-    admin | maintain | write) printf '%s\n' "$login" >> "$WORK/.trusted-comment-users" ;;
+  case "$(gh api "repos/$REPO/collaborators/$login/permission" --jq .permission 2>/dev/null || true)" in
+    admin | write) echo "$login" ;;
   esac
-done < "$WORK/.comment-users"
-jq -Rsc 'split("\n") | map(select(length > 0))' "$WORK/.trusted-comment-users" \
-  > "$WORK/.trusted-comment-users.json"
+done | jq -Rsc 'split("\n") | map(select(length > 0))' > "$raw/trusted.json"
 
-{
-  jq -r --slurpfile trusted "$WORK/.trusted-comment-users.json" \
-    '($trusted[0]) as $t | add[] | select(.user.login as $u | $t | index($u))
-     | select((.body // "") != "") | "[REVIEW \(.user.login) \(.state)]\n\(.body)\n"' \
-    "$WORK/.reviews.json"
-  jq -r --slurpfile trusted "$WORK/.trusted-comment-users.json" \
-    '($trusted[0]) as $t | add[] | select(.user.login as $u | $t | index($u))
-     | "[INLINE \(.user.login)] \(.path):\(.line // .original_line // 0)\n\(.body)\n"' \
-    "$WORK/.inline-comments.json"
-  jq -r --slurpfile trusted "$WORK/.trusted-comment-users.json" \
-    '($trusted[0]) as $t | add[] | select(.user.login as $u | $t | index($u))
-     | "[COMMENT \(.user.login)]\n\(.body)\n"' \
-    "$WORK/.issue-comments.json"
-} > "$WORK/comments.txt"
-rm -f "$WORK"/.{reviews,inline-comments,issue-comments,comment-users,trusted-comment-users}.json \
-  "$WORK/.comment-users" "$WORK/.trusted-comment-users"
+jq -nr --slurpfile t "$raw/trusted.json" '
+  def trusted: select(.user.login | IN($t[0][]));
+  (input[] | trusted | select((.body // "") != "") | "[REVIEW \(.user.login) \(.state)]\n\(.body)\n"),
+  (input[] | trusted | "[INLINE \(.user.login)] \(.path):\(.line // .original_line // 0)\n\(.body)\n"),
+  (input[] | trusted | "[COMMENT \(.user.login)]\n\(.body)\n")' \
+  "$raw"/{reviews,inline,issue}.json > "$WORK/comments.txt"
 
 # Other open PRs whose changed paths intersect this one's (rule V4). One query: gh
 # returns each open PR's file list, and the intersection is computed locally rather

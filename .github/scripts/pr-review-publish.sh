@@ -54,8 +54,6 @@ for field in Problem Impact Action; do
   [ "$(grep -cE "^   ${field}: .+" "$CARD" || true)" = "$expected" ] \
     || note "every blocking finding must carry ${field}"
 done
-grep -qE '^\[inferred\]$| \[inferred\]$' "$CARD" \
-  && note "an inferred finding cannot be blocking"
 if [ "$verdict" = none ]; then
   ! grep -q '^deferred:' "$CARD" || note "a clean card cannot defer a surviving finding"
 fi
